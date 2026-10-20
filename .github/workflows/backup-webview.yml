@@ -1,4 +1,5 @@
 name: Restore full MH Browser WebView backup
+# Pinned pre-Gecko source commit; preserves all files including binary assets.
 on:
   push:
     branches: [main]
