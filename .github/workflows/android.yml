@@ -1,0 +1,116 @@
+name: Build MH Browser APK
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: mh-browser-main-release-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Bundle community ad-blocking hosts
+        run: |
+          mkdir -p app/src/main/assets
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 90 \
+            "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" \
+            --output /tmp/mh-block-hosts
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('/tmp/mh-block-hosts').read_text(encoding='utf-8')
+          names=set()
+          for line in src.splitlines():
+              line=line.partition('#')[0].strip().split()
+              if len(line)>1 and line[0] in ('0.0.0.0','127.0.0.1'):
+                  for name in line[1:]:
+                      if name not in ('localhost','localhost.localdomain','broadcasthost') and '.' in name:
+                          names.add(name.lower())
+          if len(names)<10000:
+              raise SystemExit('Ad host list unexpectedly small')
+          Path('app/src/main/assets/ad_hosts.txt').write_text('\n'.join(sorted(names))+'\n',encoding='utf-8')
+          print('Bundled',len(names),'community ad hosts (StevenBlack/hosts)')
+          PY
+      - name: Bundle EasyList and EasyPrivacy URL filters
+        run: |
+          mkdir -p app/src/main/assets
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 90 \
+            "https://easylist.to/easylist/easylist.txt" --output /tmp/mh-easylist
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 90 \
+            "https://easylist.to/easylist/easyprivacy.txt" --output /tmp/mh-easyprivacy
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          rules=set()
+          domain_rules=set()
+          for source in ('/tmp/mh-easylist','/tmp/mh-easyprivacy'):
+              for raw in Path(source).read_text(encoding='utf-8').splitlines():
+                  if not raw.startswith('||') or raw.startswith('@@'):
+                      continue
+                  rule=raw[2:].split('$',1)[0].lower()
+                  m=re.match(r'^([a-z0-9.-]+)(\^|/|$)(.*)$',rule)
+                  if not m: continue
+                  host,sep,path=m.groups()
+                  if len(host)<4 or '.' not in host or '*' in host: continue
+                  if not path or path=='|' or (sep=='^' and not path.strip('|')):
+                      domain_rules.add(host)
+                      continue
+                  path=path.lstrip('/')
+                  if len(path)<4 or len(path)>100: continue
+                  if any(c in path for c in ('*','[',']','\\',' ','|','^','~')): continue
+                  rules.add(host+'|'+path)
+          if len(domain_rules)<1000:
+              raise SystemExit('Domain ad filter list unexpectedly small')
+          Path('app/src/main/assets/ad_filter_hosts.txt').write_text('\n'.join(sorted(domain_rules))+'\n',encoding='utf-8')
+          Path('app/src/main/assets/ad_filters.txt').write_text('\n'.join(sorted(rules))+'\n',encoding='utf-8')
+          print('Bundled',len(domain_rules),'EasyList/EasyPrivacy ad domains and',len(rules),'URL path rules')
+          PY
+      - name: Bundle current stable yt-dlp extractor
+        run: |
+          mkdir -p app/src/main/res/raw
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 90 \
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" \
+            --output app/src/main/res/raw/ytdlp
+          test "$(wc -c < app/src/main/res/raw/ytdlp)" -gt 1000000
+          echo "Bundled current stable yt-dlp extractor ($(wc -c < app/src/main/res/raw/ytdlp) bytes)"
+      - run: gradle :app:assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MH-Browser-v1.0-debug
+          path: app/build/outputs/apk/debug/*.apk
+
+      - name: Publish direct APK downloads on GitHub Releases
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="v1.0-media-20261020-frame-guard-media-v9"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "MH Browser V1.0 - Frame-level Ad Guard and Media Detection" --notes "Direct Android APK downloads. Use ARM64 for most modern Android phones. Keeps Ad Blocker enabled by default, adds EasyList/EasyPrivacy domain-only filters, blocks known ad landing redirects and unwanted new-window popups, and detects more embedded video/audio streams with referrer headers. Retains existing WhatsApp contacts, navigation, video recovery and downloads. Keeps Facebook videos in browser, smooth navigation, branded downloads, private tabs, and YouTube downloader. Preserves automatic background extractor updates, foreground downloading, progress notifications, and Open button. YouTube and network delays are not eliminated; real-device testing required." --latest=false
+          fi
+          for apk in app/build/outputs/apk/debug/*.apk; do
+            case "$apk" in
+              *arm64-v8a*) dest="MH-Browser-v1.0-ARM64.apk" ;;
+              *armeabi-v7a*) dest="MH-Browser-v1.0-ARMv7.apk" ;;
+              *x86_64*) dest="MH-Browser-v1.0-x86_64.apk" ;;
+              *) continue ;;
+            esac
+            cp "$apk" "$dest"
+            for attempt in 1 2 3; do
+              if gh release upload "$TAG" "$dest" --clobber; then break; fi
+              if [ "$attempt" -eq 3 ]; then exit 1; fi
+              sleep 8
+            done
+          done
