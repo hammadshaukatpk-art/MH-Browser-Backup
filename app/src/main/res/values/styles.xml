@@ -1,3 +1,7 @@
 <resources>
-    <style name="MHBrowserTheme" parent="android:style/Theme.Material.NoActionBar" />
+    <style name="MHBrowserTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@drawable/splash_window</item>
+        <item name="android:statusBarColor">#071326</item>
+        <item name="android:navigationBarColor">#071326</item>
+    </style>
 </resources>
