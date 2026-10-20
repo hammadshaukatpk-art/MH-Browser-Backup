@@ -92,6 +92,10 @@ public final class MediaDownloadEngine {
        YoutubeDLRequest infoRequest=new YoutubeDLRequest(url);
        infoRequest.addOption("--no-playlist");
        infoRequest.addOption("--dump-single-json");
+       try{
+        String cookies=android.webkit.CookieManager.getInstance().getCookie(url);
+        if(cookies!=null&&!cookies.isEmpty())infoRequest.addOption("--add-header","Cookie: "+cookies);
+       }catch(Exception ignored){}
        raw=YoutubeDL.getInstance().execute(infoRequest).getOut().trim();
        cacheExtractedInfo(context,url,raw);
       }finally{
@@ -179,6 +183,11 @@ public final class MediaDownloadEngine {
   req.addOption("--no-playlist");
   if(referer!=null&&referer.startsWith("http"))req.addOption("--referer",referer);
   if(userAgent!=null&&!userAgent.isEmpty())req.addOption("--user-agent",userAgent);
+  try{
+   String cookies=android.webkit.CookieManager.getInstance().getCookie(url);
+   if((cookies==null||cookies.isEmpty())&&referer!=null)cookies=android.webkit.CookieManager.getInstance().getCookie(referer);
+   if(cookies!=null&&!cookies.isEmpty())req.addOption("--add-header","Cookie: "+cookies);
+  }catch(Exception ignored){}
   req.addOption("--no-mtime");
   req.addOption("--concurrent-fragments","4");
   req.addOption("--retries","5");
