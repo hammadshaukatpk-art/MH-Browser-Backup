@@ -35,6 +35,7 @@ public class BrowserActivity extends Activity {
  final LruCache<String,Bitmap> shortcutIconCache=new LruCache<>(24);
  final Map<String,java.util.List<MediaDownloadEngine.Choice>> mediaFormatCache=new HashMap<>();
  final Map<String,String> mediaTitleCache=new HashMap<>();
+ final Map<String,String> pageMovieTitleCache=new HashMap<>();
  final Map<String,JSONArray> directMediaCache=new HashMap<>();
  final Map<WebView,TextView> tabTitleViews=new HashMap<>();
  final Map<WebView,Integer> mediaInjectionStages=new java.util.WeakHashMap<>();
@@ -147,7 +148,7 @@ public class BrowserActivity extends Activity {
  LinearLayout row(){LinearLayout l=new LinearLayout(this);l.setOrientation(0);l.setGravity(Gravity.CENTER_VERTICAL);return l;}
  TextView text(String s,int size,int color){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);t.setGravity(Gravity.CENTER_VERTICAL);return t;}
  GradientDrawable bg(int color){GradientDrawable g=new GradientDrawable();g.setColor(color);g.setCornerRadius(24);return g;}
- @Override public void onCreate(Bundle b){super.onCreate(b);prefs=getSharedPreferences("mh",0);AdBlockRules.initialize(getApplicationContext());MediaEngineUpdater.check(getApplicationContext());CookieManager.getInstance().setAcceptCookie(true);getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
+ @Override public void onCreate(Bundle b){super.onCreate(b);prefs=getSharedPreferences("mh",0);MediaEngineUpdater.check(getApplicationContext());CookieManager.getInstance().setAcceptCookie(true);getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
  root=column();root.setBackgroundColor(BG);setContentView(root);if(Build.VERSION.SDK_INT>=35){root.setOnApplyWindowInsetsListener((v,insets)->{android.graphics.Insets z=insets.getInsets(WindowInsets.Type.systemBars());v.setPadding(z.left,z.top,z.right,z.bottom);return insets;});}getWindow().getDecorView().setSystemUiVisibility(0);head=column();root.addView(head);body=column();root.addView(body,new LinearLayout.LayoutParams(-1,0,1));bar=row();bar.setBackgroundColor(PANEL);root.addView(bar);
  if(prefs.getBoolean("proxyActive",false)&&WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)){
   String host=prefs.getString("proxyHost",""),port=prefs.getString("proxyPort","");
@@ -156,26 +157,20 @@ public class BrowserActivity extends Activity {
    ProxyController.getInstance().setProxyOverride(config,(command)->runOnUiThread(command),()->{});
   }catch(Exception ignored){}}
  }if(privateOnly){CookieManager.getInstance().removeAllCookies(null);CookieManager.getInstance().flush();WebStorage.getInstance().deleteAllData();createTab(true);}else restoreTabs();
- // Private windows are an in-app transition, never replay the app launch splash.
- root.requestApplyInsets();}
+ // Build and paint the browser before loading large ad-filter lists.
+ // Saved pages are restored only after those lists are ready, so ads do not slip through.
+ new Thread(()->{AdBlockRules.initialize(getApplicationContext());runOnUiThread(this::loadDeferredTabs);},"mh-adblock-startup").start();
+ // Display the browser immediately without any custom splash delay.
+ root.requestApplyInsets();
+ if(!privateOnly&&getIntent()!=null&&getIntent().getBooleanExtra("openDownloads",false)){
+  getIntent().removeExtra("openDownloads");
+  downloads();
+ }
+}
 
  int dp(float n){return (int)(n*getResources().getDisplayMetrics().density+0.5f);}
  GradientDrawable grad(int a,int b,int radius){GradientDrawable g=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{a,b});g.setCornerRadius(dp(radius));return g;}
  TextView action(String glyph,int size,Runnable run){TextView t=text(glyph,size,WHITE);t.setGravity(Gravity.CENTER);t.setOnClickListener(v->run.run());return t;}
- void showSplash(){
-   LinearLayout splash=column();splash.setBackgroundColor(BG);splash.setGravity(Gravity.CENTER);
-   ImageView emblem=new ImageView(this);emblem.setImageResource(R.drawable.app_logo);
-   splash.addView(emblem,new LinearLayout.LayoutParams(dp(120),dp(120)));
-   TextView name=text("MH Browser",29,WHITE);name.setTypeface(null,Typeface.BOLD);name.setGravity(Gravity.CENTER);
-   LinearLayout.LayoutParams nlp=new LinearLayout.LayoutParams(-1,-2);nlp.topMargin=dp(20);splash.addView(name,nlp);
-   TextView subtitle=text("Fast  •  Private  •  Secure",15,GRAY);subtitle.setGravity(Gravity.CENTER);splash.addView(subtitle);
-   ProgressBar progress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);
-   progress.setIndeterminate(true);LinearLayout.LayoutParams pp=new LinearLayout.LayoutParams(dp(130),dp(3));pp.topMargin=dp(48);splash.addView(progress,pp);
-   TextView version=text("Version 1.0",12,GRAY);version.setGravity(Gravity.CENTER);
-   LinearLayout.LayoutParams vp=new LinearLayout.LayoutParams(-1,-2);vp.topMargin=dp(22);splash.addView(version,vp);
-   setContentView(splash);
-   new Handler(Looper.getMainLooper()).postDelayed(()->{if(!isFinishing()&&!isDestroyed()){setContentView(root);root.requestApplyInsets();if(getIntent()!=null&&getIntent().getBooleanExtra("openDownloads",false)){getIntent().removeExtra("openDownloads");downloads();}}},1250);
- }
  void nav(String s,Runnable run){TextView t=action(s,25,run);bar.addView(t,new LinearLayout.LayoutParams(0,dp(58),1));}
  void controls(){bar.removeAllViews();bar.setPadding(dp(8),dp(2),dp(8),dp(2));nav("‹",()->{if(active().canGoBack())active().goBack();else navigate("about:blank");});nav("›",()->{if(active().canGoForward())active().goForward();});nav("⌂",()->navigate("about:blank"));nav("▣",this::tabActions);nav("☰",this::menu);}
 
@@ -483,6 +478,7 @@ public class BrowserActivity extends Activity {
     if(recovery==null||SystemClock.elapsedRealtime()-recovery>5000)lastWorkingPage.put(v,u);
    }
    refreshTabTitle(v);
+   if(v==active()&&u!=null&&u.startsWith("http"))capturePageMovieTitle(v,u,null);
  v.evaluateJavascript(mediaObserverScript(),null);v.evaluateJavascript(mediaProbeScript(),null);applyAdCosmetics(v);for(Tab t:tabs)if(t.web==v&&!t.incognito&&u.startsWith("http")){addHistory(u,v.getTitle());break;}}@Override public WebResourceResponse shouldInterceptRequest(WebView v,WebResourceRequest req){
    if(AdBlockRules.shouldBlock(req,pageForFiltering.get(v),prefs.getBoolean("adBlocker",true),prefs.getBoolean("trackers",true)))
     return new WebResourceResponse("text/plain","UTF-8",new ByteArrayInputStream(new byte[0]));
@@ -824,7 +820,7 @@ public class BrowserActivity extends Activity {
  void applyVideoOrientation(){
   if(fullscreenVideo==null)return;
   boolean portrait=videoWidth>0&&videoHeight>0?videoWidth<=videoHeight:isVerticalMediaPage(tabs.isEmpty()?"":active().getUrl());
-  if(videoWidth<=0&&!portrait)return; // Wait for real media dimensions on ordinary pages.
+  // Standard players default to landscape while their metadata loads; known shorts stay portrait.
   int desired=portrait?android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT:android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
   if(getRequestedOrientation()!=desired)setRequestedOrientation(desired);
  }
@@ -976,11 +972,23 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
   }
   prefs.edit().putString("tabs",a.toString()).putInt("selectedTab",selectedNormal).apply();
  }
+ final ArrayList<String> deferredTabUrls=new ArrayList<>();
  void restoreTabs(){
   JSONArray a=prefs.getBoolean("restore",true)?readArray("tabs"):new JSONArray();
   if(a.length()==0){createTab(false);return;}
-  for(int i=0;i<a.length()&&i<12;i++){createTab(false);String u=a.optString(i,"about:blank");if(u.startsWith("http"))navigate(u);}
+  for(int i=0;i<a.length()&&i<12;i++){
+   createTab(false);
+   deferredTabUrls.add(a.optString(i,"about:blank"));
+  }
   index=Math.max(0,Math.min(tabs.size()-1,prefs.getInt("selectedTab",0)));display();
+ }
+ void loadDeferredTabs(){
+  if(isFinishing()||isDestroyed())return;
+  for(int i=0;i<deferredTabUrls.size()&&i<tabs.size();i++){
+   String u=deferredTabUrls.get(i);
+   if(u.startsWith("http"))tabs.get(i).web.loadUrl(u);
+  }
+  deferredTabUrls.clear();
  }
 
  void addHistory(String url,String title){
@@ -1320,15 +1328,41 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
    updateMediaOverlay();
   });
  }
+ String pageMovieTitleScript(){
+  return "(function(){try{"+
+   "var title='';"+
+   "var headings=document.querySelectorAll('main h1,article h1,h1,[class*=movie-title],[class*=film-title],[class*=video-title]');"+
+   "for(var i=0;i<headings.length&&i<12;i++){var h=headings[i];var t=(h.innerText||h.textContent||'').trim();"+
+   "if(t.length>1&&t.length<150&&h.getClientRects().length&& !/^(movies|series|home|search|watch|login|menu)$/i.test(t)){title=t;break;}}"+
+   "if(!title){var m=document.querySelector('meta[property=\\\"og:title\\\"]');if(m)title=m.content||'';}"+
+   "if(!title)title=document.title||'';"+
+   "return title.slice(0,180);}catch(e){return document.title||'';}})()";
+ }
+ void capturePageMovieTitle(WebView web,String page,Runnable ready){
+  if(web==null||page==null||!page.startsWith("http")){if(ready!=null)ready.run();return;}
+  web.evaluateJavascript(pageMovieTitleScript(),raw->{
+   if(page.equals(web.getUrl())){
+    try{
+     String title=new JSONArray("["+raw+"]").optString(0,"").trim();
+     if(!title.isEmpty()&&!title.matches("(?i)^(Video|Watch|Home|Player|Movies|Series|SomiFlix|YouTube|Facebook|Instagram)$"))
+      pageMovieTitleCache.put(page,title);
+    }catch(Exception ignored){}
+   }
+   if(ready!=null)ready.run();
+  });
+ }
  void mediaDownloads(){
   if(tabs.isEmpty())return;
   WebView web=active();String initialUrl=web.getUrl();
   if(initialUrl==null||!initialUrl.startsWith("http"))return;
-  // Show the organized download form immediately; format inspection never blocks opening it.
-  showMediaDownloadPanel(initialUrl,web);
+  // Resolve the visible movie heading first, not the iframe's generic player title.
+  capturePageMovieTitle(web,initialUrl,()->{
+   if(!isFinishing()&&!isDestroyed()&&web==active())showMediaDownloadPanel(initialUrl,web);
+  });
  }
  void showMediaDownloadPanel(String initialUrl,WebView web){
   ScrollView scroll=new ScrollView(this);scroll.setFillViewport(false);
+  scroll.setVerticalScrollBarEnabled(true);
   LinearLayout layout=column();layout.setPadding(dp(16),dp(8),dp(16),dp(14));scroll.addView(layout);
   LinearLayout heading=row();heading.setPadding(dp(8),dp(5),dp(8),dp(9));layout.addView(heading);
   TextView symbol=text("↓",30,0xff74d8ff);symbol.setGravity(Gravity.CENTER);
@@ -1336,6 +1370,10 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
   LinearLayout words=column();words.setPadding(dp(12),0,0,0);heading.addView(words,new LinearLayout.LayoutParams(0,-2,1));
   TextView title=text("Media Downloader",20,WHITE);title.setTypeface(null,Typeface.BOLD);words.addView(title);
   words.addView(text("Video quality  •  Audio formats",12,GRAY));
+  TextView movieName=text("Source title: "+mediaTitleForDownload(web.getUrl()),13,WHITE);
+  movieName.setTypeface(null,Typeface.BOLD);
+  movieName.setPadding(dp(12),dp(6),dp(12),dp(8));
+  layout.addView(movieName);
   TextView state=text("Choose a format below to download.",13,0xffa7c7e4);
   state.setPadding(dp(12),dp(12),dp(12),dp(12));
   state.setBackground(grad(0xff1b3a57,0xff112943,12));layout.addView(state);
@@ -1343,26 +1381,37 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
   LinearLayout directOptions=column();options.addView(directOptions);
   LinearLayout quickOptions=column();options.addView(quickOptions);
   state.setText("Choose a quality immediately. Exact available resolutions update automatically.");
-  java.util.List<MediaDownloadEngine.Choice> quickChoices=new ArrayList<>();
-  quickChoices.add(new MediaDownloadEngine.Choice("Video • best available",0,null));
-  quickChoices.add(new MediaDownloadEngine.Choice("Video • up to 1080p",1080,null));
-  quickChoices.add(new MediaDownloadEngine.Choice("Video • up to 720p",720,null));
-  quickChoices.add(new MediaDownloadEngine.Choice("Video • up to 480p",480,null));
-  quickChoices.add(new MediaDownloadEngine.Choice("Video • up to 360p",360,null));
-  quickChoices.add(new MediaDownloadEngine.Choice("Audio • MP3",0,"mp3"));
-  quickChoices.add(new MediaDownloadEngine.Choice("Audio • M4A",0,"m4a"));
+  // Only confirmed extractor formats and detected streams are selectable.
   AlertDialog dialog=themed().setView(scroll).setNegativeButton("Close",null).create();
+  settingRow(layout,"↓  Downloads • Pause / Resume","View download progress and pause or resume active transfers",()->{
+   if(dialog.isShowing())dialog.dismiss();
+   if(fullscreenVideo!=null)hideVideo();
+   downloads();
+  });
   dialog.show();styleDialog(dialog);
   activeMediaDialog=dialog;activeDirectMediaOptions=directOptions;activeMediaPage=web.getUrl();
   dialog.setOnDismissListener(d->{
    if(activeMediaDialog==dialog){activeMediaDialog=null;activeDirectMediaOptions=null;activeMediaPage=null;}
   });
   if(dialog.getWindow()!=null){android.util.DisplayMetrics m=getResources().getDisplayMetrics();
-   dialog.getWindow().setLayout((int)(m.widthPixels*0.92f),Math.min(dp(680),(int)(m.heightPixels*0.82f)));}
+   dialog.getWindow().setLayout((int)(m.widthPixels*0.92f),WindowManager.LayoutParams.WRAP_CONTENT);
+   scroll.setLayoutParams(new android.widget.FrameLayout.LayoutParams(-1,-2));
+   scroll.setMinimumHeight(0);
+  }
+  final boolean[] verifiedFormats={false};
+  final boolean[] embeddedSearching={false};
+  final boolean[] embeddedOptionsAdded={false};
+  final String[] lastFormatError={""};
   boolean knownMediaPage=isMediaPage(initialUrl)||isNetworkMediaUrl(Uri.parse(initialUrl));
-  if(knownMediaPage||mediaFormatCache.containsKey(initialUrl))
-   addFormatChoices(quickOptions,initialUrl,mediaFormatCache.containsKey(initialUrl)?mediaFormatCache.get(initialUrl):quickChoices,dialog);
-  else state.setText("Play the video first. Detecting embedded players and direct media streams; page-only links may not be downloadable.");
+  if(mediaFormatCache.containsKey(initialUrl)){
+   verifiedFormats[0]=true;
+   state.setText("Available video and audio formats detected.");
+   addFormatChoices(quickOptions,initialUrl,mediaFormatCache.get(initialUrl),dialog);
+  }else state.setText("Checking playable video and audio formats. Available options appear below while detection runs…");
+  if(!verifiedFormats[0]){
+   TextView hint=text("Reading actual video qualities and audio formats. Only confirmed formats or captured media links can be downloaded.",12,GRAY);
+   hint.setPadding(dp(8),dp(10),0,dp(8));quickOptions.addView(hint);
+  }
   JSONArray readyDirect=directMediaCache.get(initialUrl);
   if(readyDirect!=null)showDirectChoices(directOptions,readyDirect,dialog);
   web.evaluateJavascript(embeddedMediaScript(),raw->{
@@ -1375,9 +1424,34 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
     JSONObject c=candidates.optJSONObject(i);if(c==null)continue;
     String link=c.optString("url"),label=c.optString("label","Player");
     if(link.isEmpty()||link.equals(initialUrl))continue;
-    settingRow(options,"▶  "+label,"Use the embedded player URL for format detection",()->{
+    settingRow(options,"▶  "+label,"Open this player's video and audio format choices",()->{
      dialog.dismiss();showMediaDownloadPanel(link,web);
     });
+    if(i<6&&!verifiedFormats[0]){
+     if(!embeddedOptionsAdded[0]){
+      embeddedOptionsAdded[0]=true;
+      quickOptions.removeAllViews();
+      TextView fallback=text("Embedded video found • checking exact qualities. You can try the options below while detection continues.",12,GRAY);
+      fallback.setPadding(dp(8),dp(8),0,dp(8));quickOptions.addView(fallback);
+      // Never offer an unsupported generic page as a confirmed download.
+     }
+     embeddedSearching[0]=true;
+     inspectFormatsCached(link,new MediaFormatListener(){
+      @Override public void ready(String mediaTitle,java.util.List<MediaDownloadEngine.Choice> choices){
+       if(!dialog.isShowing()||verifiedFormats[0])return;
+       verifiedFormats[0]=true;
+       mediaTitleCache.put(link,mediaTitle);
+       state.setText("Detected embedded video: "+mediaTitle+" • Choose a resolution or audio format.");
+       quickOptions.removeAllViews();
+       addFormatChoices(quickOptions,link,choices,dialog);
+      }
+      @Override public void failed(String error){
+       if(!dialog.isShowing()||verifiedFormats[0])return;
+       lastFormatError[0]=error;
+       state.setText("Embedded player detected. Could not verify its formats yet. Try playing the video, then tap the player or a detected stream.");
+      }
+     });
+    }
    }
   });
   // Start lookup immediately using the current permalink; DOM scanning is independent.
@@ -1385,14 +1459,18 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
   inspectFormatsCached(initialUrl,new MediaFormatListener(){
    @Override public void ready(String mediaTitle,java.util.List<MediaDownloadEngine.Choice> choices){
     if(!dialog.isShowing())return;
-    state.setText("Available formats for: "+mediaTitle);
+    if(verifiedFormats[0])return;
+    verifiedFormats[0]=true;
+    state.setText("Available video and audio formats for: "+mediaTitle);
     quickOptions.removeAllViews();
     addFormatChoices(quickOptions,initialUrl,choices,dialog);
    }
    @Override public void failed(String error){
     if(!dialog.isShowing())return;
-    state.setText("No supported stream found for this page URL. Play the video, then use a detected stream or embedded player. Details: "+error);
-    settingRow(options,"↻  Retry format detection","Check available video/audio formats again",()->{
+    if(verifiedFormats[0])return;
+    lastFormatError[0]=error;
+    state.setText(embeddedSearching[0]?"Checking the embedded player's formats. Available quality options will appear if the host exposes them.":"Page inspection unavailable. Play the video to capture its stream, or retry once the player loads.");
+    settingRow(options,"↻  Retry format detection","Recheck the current video and its embedded player",()->{
      mediaFormatCache.remove(initialUrl);mediaTitleCache.remove(initialUrl);
      dialog.dismiss();showMediaDownloadPanel(initialUrl,web);
     });
@@ -1405,12 +1483,38 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
    if(direct.length()>0){
     mergeDirectMedia(initialUrl,direct);
     showDirectChoices(directOptions,directMediaCache.get(initialUrl),dialog);
+    if(!verifiedFormats[0]){
+     for(int i=0;i<direct.length();i++){
+      JSONObject media=direct.optJSONObject(i);
+      if(media==null||!"HLS".equals(media.optString("kind")))continue;
+      String playlist=media.optString("url");
+      if(playlist.isEmpty())continue;
+      inspectFormatsCached(playlist,new MediaFormatListener(){
+       @Override public void ready(String mediaTitle,java.util.List<MediaDownloadEngine.Choice> choices){
+        if(!dialog.isShowing()||verifiedFormats[0])return;
+        verifiedFormats[0]=true;
+        state.setText("Detected stream: "+mediaTitle+" • Select an available resolution or audio format.");
+        quickOptions.removeAllViews();
+        addFormatChoices(quickOptions,playlist,choices,dialog);
+       }
+       @Override public void failed(String error){
+        if(!dialog.isShowing()||verifiedFormats[0])return;
+        state.setText("Direct stream detected. Use the direct source below; individual resolutions were not exposed by this player.");
+       }
+      });
+      break;
+     }
+    }
    }
   });
  }
  String mediaTitleForDownload(String pageUrl){
   String title="";
-  if(pageUrl!=null&&pageUrl.equals(detectedMediaPage))title=detectedMediaTitle;
+  // The parent movie page heading takes precedence over embedded-player metadata.
+  String parentPage=tabs.isEmpty()?null:active().getUrl();
+  if(parentPage!=null)title=pageMovieTitleCache.getOrDefault(parentPage,"");
+  if(title.isEmpty()&&pageUrl!=null)title=pageMovieTitleCache.getOrDefault(pageUrl,"");
+  if(title.isEmpty()&&pageUrl!=null&&pageUrl.equals(detectedMediaPage))title=detectedMediaTitle;
   if(title.matches("(?i)^(Video|Watch|Home|Player|Embedded Player|YouTube|Facebook|Instagram|TikTok)$"))title="";
   if(title.isEmpty()&&pageUrl!=null)title=mediaTitleCache.getOrDefault(pageUrl,"");
   if(title.matches("(?i)^(Available formats|Video|Watch|Home|Player)$"))title="";
@@ -1456,7 +1560,50 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
      Toast.makeText(this,"HLS stream queued. Check Downloads for actual progress.",Toast.LENGTH_LONG).show();
     }else startDownload(link,mediaFilename(link,mime),mime,source.optString("referer",""));
    });
+   if("HLS".equals(kind))addHlsResolutions(container,link,source.optString("referer",""),dialog);
   }
+ }
+ final Map<AlertDialog,Set<String>> hlsRequests=new java.util.WeakHashMap<>();
+ void addHlsResolutions(LinearLayout container,String playlist,String sourceReferer,AlertDialog dialog){
+  Set<String> requested=hlsRequests.computeIfAbsent(dialog,k->new HashSet<>());
+  if(!requested.add(playlist))return;
+  WebView w=tabs.isEmpty()?null:active();
+  String page=w==null?"":w.getUrl();
+  String referer=sourceReferer.startsWith("http")?sourceReferer:page;
+  String agent=w==null?"":w.getSettings().getUserAgentString();
+  HlsFormatInspector.inspect(getApplicationContext(),playlist,referer,agent,new HlsFormatInspector.Callback(){
+   @Override public void ready(java.util.List<HlsFormatInspector.Variant> formats){
+    runOnUiThread(()->{
+     if(!dialog.isShowing())return;
+     TextView label=text("CONFIRMED STREAM QUALITIES",12,0xff74d8ff);
+     label.setPadding(dp(8),dp(8),0,dp(8));container.addView(label);
+     for(HlsFormatInspector.Variant variant:formats){
+      settingRow(container,"▣  "+variant.label,"Download detected stream at this quality",()->{
+       dialog.dismiss();
+       MediaDownloadService.enqueue(getApplicationContext(),variant.url,
+        new MediaDownloadEngine.Choice(variant.label,0,null),referer,agent,mediaTitleForDownload(page));
+       Toast.makeText(BrowserActivity.this,"Video download queued • See Downloads for Pause / Resume",Toast.LENGTH_LONG).show();
+      });
+     }
+     settingRow(container,"♫  Audio • MP3","Extract audio from this accessible stream",()->{
+      dialog.dismiss();
+      MediaDownloadService.enqueue(getApplicationContext(),playlist,
+       new MediaDownloadEngine.Choice("Audio • MP3",0,"mp3"),referer,agent,mediaTitleForDownload(page));
+     });
+     settingRow(container,"♫  Audio • M4A","Extract audio from this accessible stream",()->{
+      dialog.dismiss();
+      MediaDownloadService.enqueue(getApplicationContext(),playlist,
+       new MediaDownloadEngine.Choice("Audio • M4A",0,"m4a"),referer,agent,mediaTitleForDownload(page));
+     });
+    });
+   }
+   @Override public void failed(String error){
+    runOnUiThread(()->{if(dialog.isShowing()){
+     TextView notice=text("Stream quality list unavailable; original stream may still be downloadable.",12,GRAY);
+     container.addView(notice);
+    }});
+   }
+  });
  }
  void addFormatChoices(LinearLayout options,String url,java.util.List<MediaDownloadEngine.Choice> choices,AlertDialog dialog){
   if(choices==null||choices.isEmpty())return;
@@ -1537,7 +1684,10 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
  }
  void downloadMediaFile(String mediaUrl,MediaDownloadEngine.Choice choice){
   try{
-   MediaDownloadService.enqueue(getApplicationContext(),mediaUrl,choice);
+   String title=mediaTitleForDownload(tabs.isEmpty()?null:active().getUrl());
+   if(title.isEmpty())title=mediaTitleCache.getOrDefault(mediaUrl,"");
+   WebView w=tabs.isEmpty()?null:active();
+   MediaDownloadService.enqueue(getApplicationContext(),mediaUrl,choice,w==null?"":w.getUrl(),w==null?null:w.getSettings().getUserAgentString(),title);
    Toast.makeText(this,"Download started. Track progress in Downloads or Android notifications.",Toast.LENGTH_LONG).show();
    if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){
     requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},302);
