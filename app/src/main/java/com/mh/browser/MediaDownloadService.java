@@ -181,13 +181,15 @@ public class MediaDownloadService extends Service {
    return START_NOT_STICKY;
   }
   String label=intent.getStringExtra("label");
+  String titleHint=intent.getStringExtra("titleHint");
+  final String displayTitle=titleHint!=null&&!titleHint.trim().isEmpty()?safeName(titleHint):label==null?"Media download":label;
   MediaDownloadEngine.Choice choice=new MediaDownloadEngine.Choice(label==null?"Media":label,
    intent.getIntExtra("height",0),intent.getStringExtra("audio"));
   int id=notificationId(task);
   active.incrementAndGet();
   // Android requires foreground service promotion promptly after startForegroundService.
-  startForeground(id,notification("MH Browser • Preparing download",choice.label,0,true,false,task,false));
-  save(task,choice.label,"Preparing",0,"Connecting to media source…",null,null);
+  startForeground(id,notification("MH Browser • Preparing download",displayTitle,0,true,false,task,false));
+  save(task,displayTitle,"Preparing",0,"Connecting to media source…",null,null);
   MediaDownloadEngine.download(getApplicationContext(),url,choice,intent.getStringExtra("referer"),intent.getStringExtra("userAgent"),intent.getStringExtra("titleHint"),control,new MediaDownloadEngine.Callback(){
    @Override public void ready(String title,java.util.List<MediaDownloadEngine.Choice> choices){}
    @Override public void progress(int percent,String line){
@@ -199,7 +201,7 @@ public class MediaDownloadService extends Service {
     String speed=extractSpeed(line);
     boolean transferring=percent>0;
     String info=transferring?percent+"%"+(speed.isEmpty()?"":" • "+speed):shortText(line);
-    save(task,choice.label,transferring?"Downloading":"Preparing",percent,transferring?speed:shortText(line),null,null);
+    save(task,displayTitle,transferring?"Downloading":"Preparing",percent,transferring?speed:shortText(line),null,null);
     manager.notify(id,notification(transferring?"MH Browser • Downloading":"MH Browser • Preparing download",info,percent,true,false,task,false));
    }
    @Override public void completed(String name,String uri,String mime){
@@ -210,7 +212,7 @@ public class MediaDownloadService extends Service {
     finish(startId);
    }
    @Override public void failed(String error){
-    save(task,choice.label,"Failed",0,error,null,null);
+    save(task,displayTitle,"Failed",0,error,null,null);
     manager.notify(id,notification("Download failed",shortText(error),0,false,true));
     control.done=true;control.change(false);controls.remove(task,control);
     lastWriteByTask.remove(task);
