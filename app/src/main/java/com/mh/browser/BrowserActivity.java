@@ -52,6 +52,8 @@ public class BrowserActivity extends Activity {
  final Map<String,ProgressBar> downloadProgressViews=new HashMap<>();
  final Map<String,String> downloadRenderedStates=new HashMap<>();
  ScrollView downloadsScrollView;
+ int videoWidth=0,videoHeight=0,orientationBeforeVideo=android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+ String detectedMediaTitle="",detectedMediaPage="";
  final Runnable downloadUiTick=new Runnable(){@Override public void run(){
   if(screen!=8||isFinishing()||isDestroyed())return;
   JSONArray entries=readArray("downloads");int count=0;
@@ -155,8 +157,7 @@ public class BrowserActivity extends Activity {
   }catch(Exception ignored){}}
  }if(privateOnly){CookieManager.getInstance().removeAllCookies(null);CookieManager.getInstance().flush();WebStorage.getInstance().deleteAllData();createTab(true);}else restoreTabs();
  // Private windows are an in-app transition, never replay the app launch splash.
- if(!privateOnly)showSplash();
- else root.requestApplyInsets();}
+ root.requestApplyInsets();}
 
  int dp(float n){return (int)(n*getResources().getDisplayMetrics().density+0.5f);}
  GradientDrawable grad(int a,int b,int radius){GradientDrawable g=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{a,b});g.setCornerRadius(dp(radius));return g;}
@@ -290,7 +291,7 @@ public class BrowserActivity extends Activity {
  }
  CookieManager.getInstance().setAcceptThirdPartyCookies(w,!inc&&!prefs.getBoolean("blockCookies",true));
  w.setDownloadListener((link,userAgent,disposition,mime,length)->{
-  String filename=URLUtil.guessFileName(link,disposition,mime);
+  String filename=(mime!=null&&(mime.startsWith("video/")||mime.startsWith("audio/")))?mediaFilename(link,mime):URLUtil.guessFileName(link,disposition,mime);
   themed().setTitle("Download file").setMessage(filename+" • "+(length>0?(length/1024)+" KB":"Size unknown"))
    .setNegativeButton("Cancel",null).setPositiveButton("Download",(d,n)->startDownload(link,filename,mime)).show();
  });
@@ -298,8 +299,20 @@ public class BrowserActivity extends Activity {
   @JavascriptInterface public boolean adBlockEnabled(){return prefs.getBoolean("adBlocker",true);}
   @JavascriptInterface public boolean popupsAllowed(){return prefs.getBoolean("popups",false);}
   @JavascriptInterface public void playing(){runOnUiThread(()->{if(w==active()){mediaPlaying=true;signalMediaFound(w);}});}
+  @JavascriptInterface public void mediaInfo(int width,int height,String title){
+   if(width<=0||height<=0||width>16384||height>16384)return;
+   String label=title==null?"":title.trim();
+   if(label.length()>180)label=label.substring(0,180);
+   final String detected=label;
+   runOnUiThread(()->{
+    if(tabs.isEmpty()||w!=active())return;
+    videoWidth=width;videoHeight=height;
+    if(!detected.isEmpty()){detectedMediaTitle=detected;detectedMediaPage=w.getUrl();}
+    if(fullscreenVideo!=null)applyVideoOrientation();
+   });
+  }
   @JavascriptInterface public void found(){runOnUiThread(()->signalMediaFound(w));}
-  @JavascriptInterface public void pageChanged(){runOnUiThread(()->{if(w==active()){mediaPlaying=false;mediaAvailable=isMediaPage(w.getUrl());updateMediaOverlay();if(mediaAvailable)prefetchMediaFormats(w.getUrl());}});}
+  @JavascriptInterface public void pageChanged(){runOnUiThread(()->{if(w==active()){mediaPlaying=false;videoWidth=0;videoHeight=0;detectedMediaTitle="";detectedMediaPage="";mediaAvailable=isMediaPage(w.getUrl());updateMediaOverlay();if(mediaAvailable)prefetchMediaFormats(w.getUrl());}});}
   @JavascriptInterface public void stopped(){runOnUiThread(()->{if(w==active()){mediaPlaying=false;updateMediaOverlay();}});}
   @JavascriptInterface public void playerTap(){recentPlayerTap.put(w,SystemClock.elapsedRealtime());}
   @JavascriptInterface public void candidateWithRef(String link,String referer){
@@ -808,8 +821,27 @@ public class BrowserActivity extends Activity {
   if(mediaOverlay!=null)mediaOverlay.setVisibility(mediaPlaying||mediaAvailable||(!tabs.isEmpty()&&isMediaPage(active().getUrl()))?View.VISIBLE:View.GONE);
   if(fullscreenMediaOverlay!=null)fullscreenMediaOverlay.setVisibility(View.VISIBLE);
  }
+ void applyVideoOrientation(){
+  if(fullscreenVideo==null)return;
+  boolean portrait=videoWidth>0&&videoHeight>0?videoWidth<=videoHeight:isVerticalMediaPage(tabs.isEmpty()?"":active().getUrl());
+  if(videoWidth<=0&&!portrait)return; // Wait for real media dimensions on ordinary pages.
+  int desired=portrait?android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT:android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+  if(getRequestedOrientation()!=desired)setRequestedOrientation(desired);
+ }
+ boolean isVerticalMediaPage(String url){
+  if(url==null)return false;
+  try{
+   Uri u=Uri.parse(url);String host=u.getHost()==null?"":u.getHost().toLowerCase(Locale.ROOT);
+   String path=u.getPath()==null?"":u.getPath().toLowerCase(Locale.ROOT);
+   return (host.contains("youtube.com")&&path.startsWith("/shorts/"))||
+    (host.contains("instagram.com")&&(path.startsWith("/reel/")||path.startsWith("/reels/")))||
+    (host.contains("facebook.com")&&path.startsWith("/reel/"))||
+    (host.contains("tiktok.com")&&path.contains("/video/"));
+  }catch(Exception ignored){return false;}
+ }
  void showVideo(View v,WebChromeClient.CustomViewCallback cb){
   if(fullscreenVideo!=null){cb.onCustomViewHidden();return;}
+  orientationBeforeVideo=getRequestedOrientation();
   fullscreenVideo=v;fullscreenCallback=cb;
   videoLayer=new FrameLayout(this);videoLayer.setBackgroundColor(Color.BLACK);
   if(v.getParent() instanceof ViewGroup)((ViewGroup)v.getParent()).removeView(v);
@@ -822,6 +854,8 @@ public class BrowserActivity extends Activity {
   ((ViewGroup)getWindow().getDecorView()).addView(videoLayer,new ViewGroup.LayoutParams(-1,-1));
   getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
   getWindow().getDecorView().setSystemUiVisibility(5894|1024|512);
+  applyVideoOrientation();
+  if(!tabs.isEmpty())active().evaluateJavascript("if(window.mhMediaScan)window.mhMediaScan();",null);
  }
  void hideVideo(){
   if(fullscreenVideo==null)return;
@@ -831,6 +865,7 @@ public class BrowserActivity extends Activity {
   if(cb!=null)cb.onCustomViewHidden();
   getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
   getWindow().getDecorView().setSystemUiVisibility(0);
+  setRequestedOrientation(orientationBeforeVideo);
  }
  class MhDialogBuilder extends AlertDialog.Builder {
  MhDialogBuilder(){super(BrowserActivity.this,android.R.style.Theme_Material_Dialog_Alert);}
@@ -1107,7 +1142,7 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
  // A media element's presence triggers the button; the download engine separately
  // determines whether the site provides an accessible, non-DRM source.
  String earlyPageGuardScript(){
-  return "(function(){\n if(window.__mhEarlyGuard)return;\n window.__mhEarlyGuard=true;\n window.MHAdBlockEnabled=(window.MHMedia&&window.MHMedia.adBlockEnabled)?window.MHMedia.adBlockEnabled():true;\n var realOpen=window.open;\n window.open=function(){\n   if(window.MHMedia&&window.MHMedia.adBlockEnabled&&window.MHMedia.adBlockEnabled()&&(!window.MHMedia.popupsAllowed||!window.MHMedia.popupsAllowed()))return null;\n   return realOpen.apply(window,arguments);\n };\n function send(u){\n   try{\n     if(!u||typeof u!=='string'||u.length>4096||!/^https?:\\/\\//i.test(u))return;\n     var x=new URL(u,location.href),p=x.pathname.toLowerCase();\n     if(!/\\.(mp4|m4v|webm|mov|mp3|m4a|aac|wav|ogg|opus|flac|m3u8)$/.test(p)&&\n        !(/(\\/master|\\/playlist|\\/index|\\/hls|\\/manifest)$/.test(p)&&/m3u8|hls|format=mp4/i.test(x.search)))return;\n     if(window.MHMedia&&window.MHMedia.candidateWithRef)\n       window.MHMedia.candidateWithRef(x.href,location.href);\n   }catch(e){}\n }\n function scan(){\n   try{\n     document.querySelectorAll('video,audio,video source,audio source').forEach(function(m){send(m.currentSrc||m.src);});\n   }catch(e){}\n }\n try{\n   new PerformanceObserver(function(items){\n     items.getEntries().forEach(function(item){send(item.name);});\n   }).observe({entryTypes:['resource']});\n }catch(e){}\n document.addEventListener('pointerdown',function(e){\n   try{\n     var el=e.target;\n     var embeddedPlayer=(window.top!==window)&&(/\\/(embed|player|watch|video|stream)\\b/i.test(location.pathname)||!!document.querySelector(\'video,audio,.jwplayer,.plyr,.video-js,.dplayer\'));\n     if(embeddedPlayer||(el&&el.closest&&el.closest('video,audio,.jwplayer,.plyr,.video-js,.vjs-control-bar,.jw-video,.jw-display,.dplayer,.art-video-player,[class*=\"video-player\"],[id*=\"video-player\"]')))\n       if(window.MHMedia&&window.MHMedia.playerTap)window.MHMedia.playerTap();\n   }catch(e){}\n },true);\n document.addEventListener('play',function(e){\n   if(e.target&&/^(VIDEO|AUDIO)$/.test(e.target.tagName)){\n     scan();\n     if(window.MHMedia&&window.MHMedia.playing)window.MHMedia.playing();\n   }\n },true);\n document.addEventListener('DOMContentLoaded',scan);\n setInterval(scan,1800);\n})();"+"document.addEventListener(\'DOMContentLoaded\',function(){"+AdBlockRules.cosmeticScript()+"});";
+  return "(function(){\n if(window.__mhEarlyGuard)return;\n window.__mhEarlyGuard=true;\n window.MHAdBlockEnabled=(window.MHMedia&&window.MHMedia.adBlockEnabled)?window.MHMedia.adBlockEnabled():true;\n var realOpen=window.open;\n window.open=function(){\n   if(window.MHMedia&&window.MHMedia.adBlockEnabled&&window.MHMedia.adBlockEnabled()&&(!window.MHMedia.popupsAllowed||!window.MHMedia.popupsAllowed()))return null;\n   return realOpen.apply(window,arguments);\n };\n function send(u){\n   try{\n     if(!u||typeof u!=='string'||u.length>4096||!/^https?:\\/\\//i.test(u))return;\n     var x=new URL(u,location.href),p=x.pathname.toLowerCase();\n     if(!/\\.(mp4|m4v|webm|mov|mp3|m4a|aac|wav|ogg|opus|flac|m3u8)$/.test(p)&&\n        !(/(\\/master|\\/playlist|\\/index|\\/hls|\\/manifest)$/.test(p)&&/m3u8|hls|format=mp4/i.test(x.search)))return;\n     if(window.MHMedia&&window.MHMedia.candidateWithRef)\n       window.MHMedia.candidateWithRef(x.href,location.href);\n   }catch(e){}\n }\n var lastVideoSignature='';\n function reportVideo(m){\n   try{\n     if(!m||m.tagName!=='VIDEO'||!m.videoWidth||!m.videoHeight||!window.MHMedia||!window.MHMedia.mediaInfo)return;\n     var tag=Array.from(document.querySelectorAll('meta[property],meta[name]')).find(function(e){var k=e.getAttribute('property')||e.getAttribute('name');return k==='og:title'||k==='twitter:title';});\n     var title=(tag&&tag.content)||document.title||'';\n     var signature=m.videoWidth+'x'+m.videoHeight+'|'+title;\n     if(signature===lastVideoSignature)return;\n     lastVideoSignature=signature;\n     MHMedia.mediaInfo(m.videoWidth,m.videoHeight,String(title).slice(0,180));\n   }catch(e){}\n }\n function scan(){\n   try{\n     document.querySelectorAll('video,audio,video source,audio source').forEach(function(m){send(m.currentSrc||m.src);});\n     var videos=Array.from(document.querySelectorAll('video'));\n     var current=videos.find(function(m){return !m.paused&&m.videoWidth&&m.videoHeight;})||videos.find(function(m){return m.videoWidth&&m.videoHeight;});\n     if(current)reportVideo(current);\n   }catch(e){}\n }\n document.addEventListener('loadedmetadata',function(e){reportVideo(e.target);},true);\n try{\n   new PerformanceObserver(function(items){\n     items.getEntries().forEach(function(item){send(item.name);});\n   }).observe({entryTypes:['resource']});\n }catch(e){}\n document.addEventListener('pointerdown',function(e){\n   try{\n     var el=e.target;\n     var embeddedPlayer=(window.top!==window)&&(/\\/(embed|player|watch|video|stream)\\b/i.test(location.pathname)||!!document.querySelector(\'video,audio,.jwplayer,.plyr,.video-js,.dplayer\'));\n     if(embeddedPlayer||(el&&el.closest&&el.closest('video,audio,.jwplayer,.plyr,.video-js,.vjs-control-bar,.jw-video,.jw-display,.dplayer,.art-video-player,[class*=\"video-player\"],[id*=\"video-player\"]')))\n       if(window.MHMedia&&window.MHMedia.playerTap)window.MHMedia.playerTap();\n   }catch(e){}\n },true);\n document.addEventListener('play',function(e){\n   if(e.target&&/^(VIDEO|AUDIO)$/.test(e.target.tagName)){\n     lastVideoSignature='';reportVideo(e.target);scan();\n     if(window.MHMedia&&window.MHMedia.playing)window.MHMedia.playing();\n   }\n },true);\n document.addEventListener('DOMContentLoaded',scan);\n setInterval(scan,1800);\n})();"+"document.addEventListener(\'DOMContentLoaded\',function(){"+AdBlockRules.cosmeticScript()+"});";
  }
  void applyAdCosmetics(WebView w){
   if(w==null||w.getUrl()==null||!w.getUrl().startsWith("http"))return;
@@ -1373,6 +1408,32 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
    }
   });
  }
+ String mediaTitleForDownload(String pageUrl){
+  String title="";
+  if(pageUrl!=null&&pageUrl.equals(detectedMediaPage))title=detectedMediaTitle;
+  if(title.matches("(?i)^(Video|Watch|Home|Player|Embedded Player|YouTube|Facebook|Instagram|TikTok)$"))title="";
+  if(title.isEmpty()&&pageUrl!=null)title=mediaTitleCache.getOrDefault(pageUrl,"");
+  if(title.matches("(?i)^(Available formats|Video|Watch|Home|Player)$"))title="";
+  if(title.isEmpty()&&!tabs.isEmpty())title=active().getTitle();
+  if(title==null)return "";
+  title=title.replaceFirst("(?i)\\s*[-|•]\\s*(YouTube|Facebook|Instagram|TikTok|Vimeo)\\s*$","").trim();
+  if(title.matches("(?i)^(YouTube|Facebook|Instagram|TikTok|Video|Watch|Home|Available formats|Media|Player|MH Browser)$"))return "";
+  title=title.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]"," ").replaceAll("\\s+"," ").trim();
+  if(title.length()>140)title=title.substring(0,140).trim();
+  return title.replaceAll("[. ]+$","");
+ }
+ String mediaFilename(String link,String mime){
+  String fallback=URLUtil.guessFileName(link,null,mime);
+  String title=mediaTitleForDownload(tabs.isEmpty()?null:active().getUrl());
+  if(title.isEmpty())return fallback;
+  int dot=fallback.lastIndexOf('.');
+  String ext=dot>=0?fallback.substring(dot+1).toLowerCase(Locale.ROOT):"";
+  if(!ext.matches("mp4|m4v|webm|mov|mkv|mp3|m4a|aac|wav|ogg|opus|flac|3gp")){
+   String m=mime==null?"":mime.toLowerCase(Locale.ROOT);
+   ext=m.contains("audio/mpeg")?"mp3":m.contains("audio/mp4")?"m4a":m.contains("webm")?"webm":m.contains("ogg")?"ogg":m.startsWith("audio/")?"m4a":"mp4";
+  }
+  return title+"."+ext;
+ }
  void showDirectChoices(LinearLayout container,JSONArray direct,AlertDialog dialog){
   container.removeAllViews();
   if(direct==null||direct.length()==0)return;
@@ -1391,9 +1452,9 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
      String referer=source.optString("referer",w==null?"":w.getUrl());
      String agent=w==null?null:w.getSettings().getUserAgentString();
      MediaDownloadService.enqueue(getApplicationContext(),link,
-      new MediaDownloadEngine.Choice("HLS video • best available",0,null),referer,agent);
+      new MediaDownloadEngine.Choice("HLS video • best available",0,null),referer,agent,mediaTitleForDownload(w==null?null:w.getUrl()));
      Toast.makeText(this,"HLS stream queued. Check Downloads for actual progress.",Toast.LENGTH_LONG).show();
-    }else startDownload(link,URLUtil.guessFileName(link,null,mime),mime,source.optString("referer",""));
+    }else startDownload(link,mediaFilename(link,mime),mime,source.optString("referer",""));
    });
   }
  }
@@ -1428,7 +1489,7 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
    .setItems(labels.toArray(new String[0]),(d,which)->{
     JSONObject item=sources.optJSONObject(which);if(item==null)return;
     String link=item.optString("url"),mime=item.optString("type");
-    String filename=URLUtil.guessFileName(link,null,mime);
+    String filename=mediaFilename(link,mime);
     themed().setTitle("Save original file?").setMessage(filename)
      .setNegativeButton("Cancel",null)
      .setPositiveButton("Download",(x,y)->startDownload(link,filename,mime)).show();
@@ -1519,7 +1580,7 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
  }
  void downloads(){
   showingSettings=true;screen=8;head.removeAllViews();body.removeAllViews();sectionHeader("Downloads",this::display);
-  ScrollView sc=new ScrollView(this);body.addView(sc);LinearLayout list=column();list.setPadding(dp(15),dp(12),dp(15),dp(22));sc.addView(list);
+  ScrollView sc=new ScrollView(this);downloadsScrollView=sc;body.addView(sc);LinearLayout list=column();list.setPadding(dp(15),dp(12),dp(15),dp(22));sc.addView(list);
   String[] labels={"Today","Previous Day","Week","Monthly","Yearly","All","Choose date"};
   HorizontalScrollView horizontal=new HorizontalScrollView(this);horizontal.setHorizontalScrollBarEnabled(false);list.addView(horizontal);
   LinearLayout filters=row();horizontal.addView(filters);
@@ -1567,6 +1628,13 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
     info.addView(p,progressLp);
     p.setVisibility(status==DownloadManager.STATUS_RUNNING?View.VISIBLE:View.GONE);
     downloadProgressViews.put(task,p);
+   }
+   if(id==-2&&("Preparing".equals(item.optString("state"))||"Downloading".equals(item.optString("state"))||"Paused".equals(item.optString("state")))){
+    String task=item.optString("task");boolean paused="Paused".equals(item.optString("state"));
+    TextView toggle=text(paused?"▶ Resume":"Ⅱ Pause",12,WHITE);
+    toggle.setGravity(Gravity.CENTER);toggle.setPadding(dp(10),dp(12),dp(10),dp(12));
+    toggle.setBackground(grad(0xff2373a8,0xff1a4f7a,10));card.addView(toggle);
+    toggle.setOnClickListener(v->{toggle.setEnabled(false);MediaDownloadService.setPaused(this,task,!paused);downloadUiHandler.postDelayed(this::refreshCompletedDownloadRows,450);});
    }
    if(status==DownloadManager.STATUS_SUCCESSFUL){
     View.OnClickListener openDownloaded=v->{

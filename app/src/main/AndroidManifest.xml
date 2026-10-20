@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <application android:allowBackup="false" android:label="MH Browser" android:icon="@drawable/app_logo" android:theme="@android:style/Theme.Material.NoActionBar" android:usesCleartextTraffic="false" android:extractNativeLibs="true">
+    <application android:allowBackup="false" android:label="MH Browser" android:icon="@drawable/app_logo" android:theme="@style/MHBrowserTheme" android:usesCleartextTraffic="false" android:extractNativeLibs="true">
         <activity android:name=".BrowserActivity" android:resizeableActivity="true" android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>

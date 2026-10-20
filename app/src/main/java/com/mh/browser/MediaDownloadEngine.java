@@ -184,8 +184,7 @@ public final class MediaDownloadEngine {
   req.addOption("--retries","5");
   req.addOption("--fragment-retries","5");
   req.addOption("--socket-timeout","25");
-  req.addOption("--restrict-filenames");
-  req.addOption("-o",new File(staging,"%(title).90B-%(id)s.%(ext)s").getAbsolutePath());
+  req.addOption("-o",new File(staging,"%(title).140B.%(ext)s").getAbsolutePath());
   if(choice.audioFormat!=null){
    req.addOption("-f","bestaudio/best");
    req.addOption("-x");
@@ -203,17 +202,23 @@ public final class MediaDownloadEngine {
   }
   return req;
  }
- private static void runDownload(YoutubeDLRequest req,Callback callback)throws Exception{
+ public interface PauseControl {void await() throws InterruptedException;}
+ private static void runDownload(YoutubeDLRequest req,Callback callback,PauseControl control)throws Exception{
   String processId="mh-"+UUID.randomUUID();
   YoutubeDL.getInstance().execute(req,processId,false,(percent,eta,line)->{
+   try{control.await();}catch(InterruptedException e){Thread.currentThread().interrupt();throw new RuntimeException(e);}
    callback.progress(Math.max(0,Math.min(100,Math.round(percent))),line==null?"Downloading media":line);
    return kotlin.Unit.INSTANCE;
   });
  }
  public static void download(Context context,String url,Choice choice,Callback callback){
-  download(context,url,choice,null,null,callback);
+  download(context,url,choice,null,null,()->{},callback);
  }
- public static void download(Context context,String url,Choice choice,String referer,String userAgent,Callback callback){
+ public static void download(Context context,String url,Choice choice,String referer,String userAgent,Callback callback){download(context,url,choice,referer,userAgent,()->{},callback);}
+ public static void download(Context context,String url,Choice choice,String referer,String userAgent,PauseControl control,Callback callback){
+  download(context,url,choice,referer,userAgent,null,control,callback);
+ }
+ public static void download(Context context,String url,Choice choice,String referer,String userAgent,String preferredTitle,PauseControl control,Callback callback){
   new Thread(()->{
    File staging=null;
    boolean acquired=false;
@@ -236,7 +241,7 @@ public final class MediaDownloadEngine {
     callback.progress(0,cached?"Connecting to prepared video streams…":"Resolving media streams…");
     try{
      YoutubeDLRequest req=downloadRequest(url,choice,staging,prepared,referer,userAgent);
-     runDownload(req,callback);
+     runDownload(req,callback,control);
     }catch(Exception cachedError){
      if(!cached)throw cachedError;
      // Cached signed stream URLs can expire or be rejected by the provider.
@@ -244,8 +249,9 @@ public final class MediaDownloadEngine {
      File[] partial=staging.listFiles();
      if(partial!=null)for(File part:partial)if(part.isFile())part.delete();
      callback.progress(0,"Refreshing expired media links…");
-     runDownload(downloadRequest(url,choice,staging,null,referer,userAgent),callback);
+     runDownload(downloadRequest(url,choice,staging,null,referer,userAgent),callback,control);
     }
+    control.await();
     File[] files=staging.listFiles();
     File result=null;int bestScore=-1;
     if(files!=null)for(File f:files){
@@ -278,6 +284,17 @@ public final class MediaDownloadEngine {
       lowerName.endsWith(".m4a")?"audio/mp4":
       lowerName.endsWith(".webm")?"video/webm":
       lowerName.endsWith(".mkv")?"video/x-matroska":"video/mp4";
+    if(preferredTitle!=null&&!preferredTitle.trim().isEmpty()){
+     String clean=preferredTitle.trim().replaceAll("[\\\\/:*?\\\"<>|\\p{Cntrl}]"," ").replaceAll("\\s+"," ").replaceAll("[. ]+$","");
+     if(clean.length()>140)clean=clean.substring(0,140).trim();
+     if(!clean.isEmpty()){
+      String ext=lowerName.substring(lowerName.lastIndexOf('.')+1);
+      File named=new File(staging,clean+"."+ext);
+      if(!named.equals(result)&&!named.exists()){
+       if(result.renameTo(named))result=named;
+      }
+     }
+    }
     Uri saved=publish(context,result,mime);
     callback.completed(result.getName(),saved.toString(),mime);
    }catch(Exception ex){callback.failed("Download failed. "+safeError(ex));}
