@@ -189,6 +189,8 @@ public final class MediaDownloadEngine {
    if(cookies!=null&&!cookies.isEmpty())req.addOption("--add-header","Cookie: "+cookies);
   }catch(Exception ignored){}
   req.addOption("--no-mtime");
+  req.addOption("--continue");
+  req.addOption("--no-overwrites");
   req.addOption("--concurrent-fragments","4");
   req.addOption("--retries","5");
   req.addOption("--fragment-retries","5");
@@ -211,14 +213,39 @@ public final class MediaDownloadEngine {
   }
   return req;
  }
- public interface PauseControl {void await() throws InterruptedException;}
+ public interface PauseControl {
+  void await() throws InterruptedException;
+  default long pauseGeneration(){return 0;}
+  default void processStarted(String id){}
+  default void processFinished(String id){}
+  default boolean isCancelled(){return false;}
+ }
  private static void runDownload(YoutubeDLRequest req,Callback callback,PauseControl control)throws Exception{
-  String processId="mh-"+UUID.randomUUID();
-  YoutubeDL.getInstance().execute(req,processId,false,(percent,eta,line)->{
-   try{control.await();}catch(InterruptedException e){Thread.currentThread().interrupt();throw new RuntimeException(e);}
-   callback.progress(Math.max(0,Math.min(100,Math.round(percent))),line==null?"Downloading media":line);
-   return kotlin.Unit.INSTANCE;
-  });
+  // Pause cancels the active yt-dlp subprocess. Resume re-launches with its
+  // existing .part files, rather than allowing the subprocess to download
+  // silently while the UI claims the transfer is paused.
+  while(true){
+   control.await();
+   if(control.isCancelled())throw new InterruptedException("Download cancelled");
+   long generation=control.pauseGeneration();
+   String processId="mh-"+UUID.randomUUID();
+   control.processStarted(processId);
+   try{
+    control.await();
+    YoutubeDL.getInstance().execute(req,processId,false,(percent,eta,line)->{
+     // Never block the yt-dlp output callback while paused. Blocking it can
+     // deadlock process termination and freeze the app during Pause/Delete.
+     if(control.isCancelled()||control.pauseGeneration()!=generation)
+      return kotlin.Unit.INSTANCE; // Stop reporting; subprocess termination is asynchronous.
+     callback.progress(Math.max(0,Math.min(100,Math.round(percent))),line==null?"Downloading media":line);
+     return kotlin.Unit.INSTANCE;
+    });
+    if(control.pauseGeneration()==generation)return;
+   }catch(Exception ex){
+    if(control.pauseGeneration()==generation)throw ex;
+    // An explicit Pause stopped this run; retain fragments and wait for Resume.
+   }finally{control.processFinished(processId);}
+  }
  }
  public static void download(Context context,String url,Choice choice,Callback callback){
   download(context,url,choice,null,null,()->{},callback);
@@ -247,10 +274,11 @@ public final class MediaDownloadEngine {
      prepared=awaitPrefetchedInfo(context,url);
     }
     boolean cached=prepared!=null;
+    final File downloadFolder=staging;
     callback.progress(0,cached?"Connecting to prepared video streams…":"Resolving media streams…");
     try{
      YoutubeDLRequest req=downloadRequest(url,choice,staging,prepared,referer,userAgent);
-     runDownload(req,callback,control);
+     runDownload(req,withStoredBytes(callback,downloadFolder),control);
     }catch(Exception cachedError){
      if(!cached)throw cachedError;
      // Cached signed stream URLs can expire or be rejected by the provider.
@@ -258,9 +286,10 @@ public final class MediaDownloadEngine {
      File[] partial=staging.listFiles();
      if(partial!=null)for(File part:partial)if(part.isFile())part.delete();
      callback.progress(0,"Refreshing expired media links…");
-     runDownload(downloadRequest(url,choice,staging,null,referer,userAgent),callback,control);
+     runDownload(downloadRequest(url,choice,staging,null,referer,userAgent),withStoredBytes(callback,downloadFolder),control);
     }
     control.await();
+    if(control.isCancelled())throw new InterruptedException("Download cancelled");
     File[] files=staging.listFiles();
     File result=null;int bestScore=-1;
     if(files!=null)for(File f:files){
@@ -304,11 +333,25 @@ public final class MediaDownloadEngine {
       }
      }
     }
+    if(control.isCancelled())throw new InterruptedException("Download cancelled");
     Uri saved=publish(context,result,mime);
     callback.completed(result.getName(),saved.toString(),mime);
    }catch(Exception ex){callback.failed("Download failed. "+safeError(ex));}
    finally{if(staging!=null)deleteTree(staging);if(acquired)MediaEngineUpdater.releaseUse();}
   },"mh-media-download").start();
+ }
+ private static Callback withStoredBytes(Callback target,File folder){
+  return new Callback(){
+   @Override public void ready(String title,List<Choice> choices){target.ready(title,choices);}
+   @Override public void completed(String name,String uri,String mime){target.completed(name,uri,mime);}
+   @Override public void failed(String error){target.failed(error);}
+   @Override public void progress(int percent,String line){
+    long bytes=0;
+    File[] files=folder.listFiles();
+    if(files!=null)for(File file:files)if(file.isFile()&&!file.getName().endsWith(".json")&&!file.getName().endsWith(".ytdl"))bytes+=Math.max(0,file.length());
+    target.progress(percent,"MH_STORED_BYTES="+bytes+" "+(line==null?"":line));
+   }
+  };
  }
  private static Uri publish(Context context,File source,String mime)throws Exception{
   if(Build.VERSION.SDK_INT<29){
