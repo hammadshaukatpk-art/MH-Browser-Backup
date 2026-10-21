@@ -32,6 +32,8 @@ public class BrowserActivity extends Activity {
  View fullscreenVideo;WebChromeClient.CustomViewCallback fullscreenCallback;FrameLayout videoLayer,webPageLayer;
  TextView mediaOverlay,fullscreenMediaOverlay;
  boolean mediaPlaying=false, mediaAvailable=false, privateOnly=false; int historyFilter=0,downloadFilter=0;
+ boolean lightTheme=false,downloadSelecting=false;
+ final Set<String> selectedDownloadKeys=new HashSet<>();
  final LruCache<String,Bitmap> shortcutIconCache=new LruCache<>(24);
  final Map<String,java.util.List<MediaDownloadEngine.Choice>> mediaFormatCache=new HashMap<>();
  final Map<String,String> mediaTitleCache=new HashMap<>();
@@ -153,10 +155,42 @@ public class BrowserActivity extends Activity {
  static class Tab {WebView web; boolean incognito,desktop; Tab(WebView w,boolean p,boolean d){web=w;incognito=p;desktop=d;}}
  LinearLayout column(){LinearLayout l=new LinearLayout(this);l.setOrientation(1);return l;}
  LinearLayout row(){LinearLayout l=new LinearLayout(this);l.setOrientation(0);l.setGravity(Gravity.CENTER_VERTICAL);return l;}
- TextView text(String s,int size,int color){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);t.setGravity(Gravity.CENTER_VERTICAL);return t;}
- GradientDrawable bg(int color){GradientDrawable g=new GradientDrawable();g.setColor(color);g.setCornerRadius(24);return g;}
- @Override public void onCreate(Bundle b){super.onCreate(b);prefs=getSharedPreferences("mh",0);MediaEngineUpdater.check(getApplicationContext());CookieManager.getInstance().setAcceptCookie(true);getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
- root=column();root.setBackgroundColor(BG);setContentView(root);if(Build.VERSION.SDK_INT>=35){root.setOnApplyWindowInsetsListener((v,insets)->{android.graphics.Insets z=insets.getInsets(WindowInsets.Type.systemBars());v.setPadding(z.left,z.top,z.right,z.bottom);return insets;});}getWindow().getDecorView().setSystemUiVisibility(0);head=column();root.addView(head);body=column();root.addView(body,new LinearLayout.LayoutParams(-1,0,1));bar=row();bar.setBackgroundColor(PANEL);root.addView(bar);
+ int themeText(int color){
+  if(!lightTheme)return color;
+  if(color==WHITE)return 0xff172b40;
+  if(color==GRAY)return 0xff53677e;
+  int alpha=Color.alpha(color),red=Color.red(color),green=Color.green(color),blue=Color.blue(color);
+  if(alpha<180)return color;
+  if(red>145&&green>145&&blue>145)return 0xff344a60;
+  if(blue>green&&green>red&&blue>135)return 0xff16638e;
+  return color;
+ }
+ int themeSurface(int color){
+  if(!lightTheme)return color;
+  if(color==Color.TRANSPARENT||Color.alpha(color)<180)return color;
+  if(color==WHITE||color==0xffe8f2ff||color==0xfff1f6ff)return 0xffffffff;
+  if(color==BG)return 0xfff6f9fd;
+  if(color==PANEL)return 0xffe8f0f8;
+  int red=Color.red(color),green=Color.green(color),blue=Color.blue(color);
+  if(red>green+16&&red>blue+10)return 0xfff3dfe3;
+  if(blue>red&&blue>green&&green>red+10&&green>65)return 0xffd7e8f6;
+  if(red<110&&green<145&&blue<175)return 0xffe6eef7;
+  if(red<160&&green<190&&blue<220)return 0xffeff4fa;
+  return color;
+ }
+ void applyThemeBars(){
+  getWindow().setStatusBarColor(lightTheme?0xfff6f9fd:BG);
+  getWindow().setNavigationBarColor(lightTheme?0xffe8f0f8:BG);
+  int flags=lightTheme?View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR:0;
+  if(lightTheme&&Build.VERSION.SDK_INT>=26)flags|=View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+  getWindow().getDecorView().setSystemUiVisibility(flags);
+  if(root!=null)root.setBackgroundColor(themeSurface(BG));
+  if(bar!=null)bar.setBackgroundColor(themeSurface(PANEL));
+ }
+ TextView text(String s,int size,int color){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(themeText(color));t.setGravity(Gravity.CENTER_VERTICAL);return t;}
+ GradientDrawable bg(int color){GradientDrawable g=new GradientDrawable();g.setColor(themeSurface(color));g.setCornerRadius(24);return g;}
+ @Override public void onCreate(Bundle b){super.onCreate(b);prefs=getSharedPreferences("mh",0);lightTheme=prefs.getBoolean("lightTheme",false);MediaEngineUpdater.check(getApplicationContext());CookieManager.getInstance().setAcceptCookie(true);getWindow().setStatusBarColor(lightTheme?0xfff6f9fd:BG);getWindow().setNavigationBarColor(lightTheme?0xffe8f0f8:BG);
+ root=column();root.setBackgroundColor(themeSurface(BG));setContentView(root);if(Build.VERSION.SDK_INT>=35){root.setOnApplyWindowInsetsListener((v,insets)->{android.graphics.Insets z=insets.getInsets(WindowInsets.Type.systemBars());v.setPadding(z.left,z.top,z.right,z.bottom);return insets;});}getWindow().getDecorView().setSystemUiVisibility(lightTheme?View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|(Build.VERSION.SDK_INT>=26?View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR:0):0);head=column();root.addView(head);body=column();root.addView(body,new LinearLayout.LayoutParams(-1,0,1));bar=row();bar.setBackgroundColor(themeSurface(PANEL));root.addView(bar);
  if(prefs.getBoolean("proxyActive",false)&&WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)){
   String host=prefs.getString("proxyHost",""),port=prefs.getString("proxyPort","");
   if(!host.isEmpty()&&!port.isEmpty()){try{
@@ -176,7 +210,7 @@ public class BrowserActivity extends Activity {
 }
 
  int dp(float n){return (int)(n*getResources().getDisplayMetrics().density+0.5f);}
- GradientDrawable grad(int a,int b,int radius){GradientDrawable g=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{a,b});g.setCornerRadius(dp(radius));return g;}
+ GradientDrawable grad(int a,int b,int radius){GradientDrawable g=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{themeSurface(a),themeSurface(b)});g.setCornerRadius(dp(radius));return g;}
  TextView action(String glyph,int size,Runnable run){TextView t=text(glyph,size,WHITE);t.setGravity(Gravity.CENTER);t.setOnClickListener(v->run.run());return t;}
  void nav(String s,Runnable run){TextView t=action(s,25,run);bar.addView(t,new LinearLayout.LayoutParams(0,dp(58),1));}
  void controls(){bar.removeAllViews();bar.setPadding(dp(8),dp(2),dp(8),dp(2));nav("‹",()->{if(active().canGoBack())active().goBack();else navigate("about:blank");});nav("›",()->{if(active().canGoForward())active().goForward();});nav("⌂",()->navigate("about:blank"));nav("▣",this::tabActions);nav("☰",this::menu);}
@@ -196,14 +230,14 @@ public class BrowserActivity extends Activity {
  }
 
  void header(){
-  head.setBackgroundColor(BG);
+  head.setBackgroundColor(themeSurface(BG));
   LinearLayout r=row();r.setPadding(dp(14),dp(10),dp(14),dp(9));head.addView(r);
   TextView lock=text("⌕",25,0xff71d6ff);lock.setGravity(Gravity.CENTER);
   LinearLayout search=row();search.setBackground(grad(0xff192e4a,0xff14253f,17));
   r.addView(search,new LinearLayout.LayoutParams(0,dp(48),1));
   search.addView(lock,new LinearLayout.LayoutParams(dp(42),-1));
-  address=new EditText(this);address.setSingleLine();address.setHint("Search or type URL");address.setTextColor(WHITE);
-  address.setHintTextColor(0xffb1c1d6);address.setTextSize(14);address.setPadding(0,0,dp(8),0);
+  address=new EditText(this);address.setSingleLine();address.setHint("Search or type URL");address.setTextColor(themeText(WHITE));
+  address.setHintTextColor(themeText(0xffb1c1d6));address.setTextSize(14);address.setPadding(0,0,dp(8),0);
   address.setBackgroundColor(Color.TRANSPARENT);search.addView(address,new LinearLayout.LayoutParams(0,-1,1));
   address.setImeOptions(2);
   address.setOnEditorActionListener((v,a,e)->{navigate(address.getText().toString());address.clearFocus();
@@ -517,7 +551,7 @@ public class BrowserActivity extends Activity {
  void tabStrip(){
   tabTitleViews.clear();
   HorizontalScrollView sc=new HorizontalScrollView(this);sc.setHorizontalScrollBarEnabled(false);
-  sc.setFillViewport(false);sc.setBackgroundColor(0xff0a1b31);head.addView(sc,new LinearLayout.LayoutParams(-1,dp(51)));
+  sc.setFillViewport(false);sc.setBackgroundColor(themeSurface(0xff0a1b31));head.addView(sc,new LinearLayout.LayoutParams(-1,dp(51)));
   LinearLayout row=row();row.setPadding(dp(10),dp(5),dp(10),dp(5));sc.addView(row);
   for(int i=0;i<tabs.size();i++){
    final int n=i;Tab t=tabs.get(i);LinearLayout pill=row();
@@ -588,8 +622,8 @@ public class BrowserActivity extends Activity {
   }
   TextView caption=text("Discover the web",19,WHITE);caption.setTypeface(null,Typeface.BOLD);
   LinearLayout.LayoutParams cap=new LinearLayout.LayoutParams(-1,-2);cap.topMargin=dp(30);c.addView(caption,cap);
-  EditText query=new EditText(this);query.setSingleLine();query.setTextColor(WHITE);query.setTextSize(16);
-  query.setHintTextColor(0xffb7c8de);query.setHint("⌕   Search the web or enter a URL");
+  EditText query=new EditText(this);query.setSingleLine();query.setTextColor(themeText(WHITE));query.setTextSize(16);
+  query.setHintTextColor(themeText(0xffb7c8de));query.setHint("⌕   Search the web or enter a URL");
   query.setPadding(dp(17),0,dp(14),0);query.setBackground(grad(0xff1a3355,0xff122b47,16));
   LinearLayout.LayoutParams qlp=new LinearLayout.LayoutParams(-1,dp(56));qlp.topMargin=dp(12);c.addView(query,qlp);
   query.setImeOptions(2);query.setOnEditorActionListener((v,a,e)->{navigate(query.getText().toString());return true;});
@@ -779,6 +813,7 @@ public class BrowserActivity extends Activity {
   menuItem(list,"↓","Downloads","Files saved by Android",this::downloads,d);
   menuLabel(list,"TOOLS & SETTINGS");
   menuItem(list,"⚙","Settings","Customize MH Browser",this::settings,d);
+  menuItem(list,"◐","Theme",lightTheme?"Light mode • switch to Dark":"Dark mode • switch to Light",this::themeSettings,d);
   menuItem(list,"▤","Desktop site",tabs.get(index).desktop?"Enabled for this tab":"Request a desktop layout",this::toggleDesktop,d);
   menuItem(list,"↗","Share page","Send this website to another app",()->{
    Intent share=new Intent(Intent.ACTION_SEND);share.setType("text/plain");share.putExtra(Intent.EXTRA_TEXT,active().getUrl());
@@ -871,14 +906,14 @@ public class BrowserActivity extends Activity {
   setRequestedOrientation(orientationBeforeVideo);
  }
  class MhDialogBuilder extends AlertDialog.Builder {
- MhDialogBuilder(){super(BrowserActivity.this,android.R.style.Theme_Material_Dialog_Alert);}
+ MhDialogBuilder(){super(BrowserActivity.this,lightTheme?android.R.style.Theme_Material_Light_Dialog_Alert:android.R.style.Theme_Material_Dialog_Alert);}
  @Override public AlertDialog show(){AlertDialog d=super.show();styleDialog(d);return d;}
 }
 void styleDialog(AlertDialog d){
  if(d.getWindow()!=null)d.getWindow().setBackgroundDrawable(grad(0xff17324e,0xff10243c,18));
- if(d.getButton(-1)!=null)d.getButton(-1).setTextColor(0xff6ad9ff);
- if(d.getButton(-2)!=null)d.getButton(-2).setTextColor(0xffb6c9de);
- if(d.getButton(-3)!=null)d.getButton(-3).setTextColor(0xff6ad9ff);
+ if(d.getButton(-1)!=null)d.getButton(-1).setTextColor(themeText(0xff6ad9ff));
+ if(d.getButton(-2)!=null)d.getButton(-2).setTextColor(themeText(0xffb6c9de));
+ if(d.getButton(-3)!=null)d.getButton(-3).setTextColor(themeText(0xff6ad9ff));
 }
 AlertDialog.Builder themed(){return new MhDialogBuilder();}
  void dialog(String title,String message){themed().setTitle(title).setMessage(message).setPositiveButton("OK",null).show();}
@@ -934,8 +969,8 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
   JSONObject old=position<0?null:shortcuts().optJSONObject(position);
   LinearLayout c=column();c.setPadding(dp(22),dp(10),dp(22),dp(6));
   EditText name=new EditText(this),link=new EditText(this);
-  name.setSingleLine(true);name.setHint("Shortcut name");name.setTextColor(WHITE);
-  link.setSingleLine(true);link.setHint("https://example.com");link.setTextColor(WHITE);link.setInputType(17);
+  name.setSingleLine(true);name.setHint("Shortcut name");name.setTextColor(themeText(WHITE));
+  link.setSingleLine(true);link.setHint("https://example.com");link.setTextColor(themeText(WHITE));link.setInputType(17);
   if(old!=null){name.setText(old.optString("name"));link.setText(old.optString("url"));}
   c.addView(name);c.addView(link);
   LinearLayout preview=row();preview.setPadding(dp(8),dp(8),dp(8),dp(8));
@@ -1777,11 +1812,37 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
   for(int i=0;i<labels.length;i++){final int n=i;TextView chip=action(labels[i],12,()->{
     if(n==6){Calendar now=Calendar.getInstance();new DatePickerDialog(this,(picker,y,m,d)->{
      Calendar chosen=Calendar.getInstance();chosen.set(y,m,d,0,0,0);chosen.set(Calendar.MILLISECOND,0);
-     prefs.edit().putLong("downloadDate",chosen.getTimeInMillis()).apply();downloadFilter=6;downloads();
+     prefs.edit().putLong("downloadDate",chosen.getTimeInMillis()).apply();downloadFilter=6;selectedDownloadKeys.clear();downloads();
     },now.get(Calendar.YEAR),now.get(Calendar.MONTH),now.get(Calendar.DAY_OF_MONTH)).show();}
-    else{downloadFilter=n;downloads();}
+    else{downloadFilter=n;selectedDownloadKeys.clear();downloads();}
    });chip.setPadding(dp(13),0,dp(13),0);chip.setBackground(grad(downloadFilter==i?0xff2373a8:PANEL,downloadFilter==i?0xff1a4f7a:PANEL,14));
    LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(39));lp.rightMargin=dp(7);filters.addView(chip,lp);
+  }
+  LinearLayout selectionToolbar=row();selectionToolbar.setPadding(dp(3),dp(12),dp(3),dp(4));list.addView(selectionToolbar);
+  TextView selectMode=text(downloadSelecting?"✓  Done selecting":"☑  Select downloads",14,0xff7dd9ff);
+  selectMode.setTypeface(null,Typeface.BOLD);selectMode.setPadding(dp(10),dp(12),dp(10),dp(12));
+  selectMode.setBackground(grad(0xff183b59,0xff112942,11));
+  selectionToolbar.addView(selectMode,new LinearLayout.LayoutParams(0,-2,1));
+  selectMode.setOnClickListener(v->{downloadSelecting=!downloadSelecting;selectedDownloadKeys.clear();refreshCompletedDownloadRows();});
+  if(downloadSelecting){
+   TextView selectAll=text("Select all",13,0xff7dd9ff);
+   selectAll.setGravity(Gravity.CENTER);selectAll.setPadding(dp(12),dp(12),dp(12),dp(12));
+   selectionToolbar.addView(selectAll);
+   selectAll.setOnClickListener(v->{
+    JSONArray entries=readArray("downloads");
+    ArrayList<String> visible=new ArrayList<>();
+    for(int j=0;j<entries.length();j++){JSONObject entry=entries.optJSONObject(j);if(entry!=null&&downloadMatches(entry.optLong("time")))visible.add(downloadKey(entry));}
+    boolean all=selectedDownloadKeys.containsAll(visible);
+    if(all)selectedDownloadKeys.removeAll(visible);else selectedDownloadKeys.addAll(visible);
+    refreshCompletedDownloadRows();
+   });
+  }
+  if(downloadSelecting){
+   TextView deleteSelected=text("Delete selected ("+selectedDownloadKeys.size()+")",14,WHITE);
+   deleteSelected.setGravity(Gravity.CENTER);deleteSelected.setPadding(dp(13),dp(13),dp(13),dp(13));
+   deleteSelected.setBackground(grad(0xff914044,0xff61262e,11));
+   LinearLayout.LayoutParams dl=new LinearLayout.LayoutParams(-1,-2);dl.topMargin=dp(8);list.addView(deleteSelected,dl);
+   deleteSelected.setOnClickListener(v->deleteSelectedDownloads());
   }
   downloadUiHandler.removeCallbacks(downloadUiTick);
   downloadStatusViews.clear();downloadProgressViews.clear();downloadRenderedStates.clear();
@@ -1792,9 +1853,33 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
    if(!downloadMatches(t))continue;shown++;
    String name=item.optString("name","Downloaded file");
    String day=new java.text.SimpleDateFormat("EEEE, MMM d, yyyy",Locale.getDefault()).format(new Date(t));
-   if(!day.equals(lastDate)){lastDate=day;TextView groupTitle=text(day,14,0xff7dd9ff);groupTitle.setTypeface(null,Typeface.BOLD);groupTitle.setPadding(dp(5),dp(17),0,dp(5));list.addView(groupTitle);}
+   if(!day.equals(lastDate)){
+    lastDate=day;LinearLayout dayRow=row();dayRow.setPadding(dp(5),dp(17),dp(5),dp(5));list.addView(dayRow);
+    TextView groupTitle=text(day,14,0xff7dd9ff);groupTitle.setTypeface(null,Typeface.BOLD);dayRow.addView(groupTitle,new LinearLayout.LayoutParams(0,-2,1));
+    if(downloadSelecting){
+     final String targetDay=day;
+     TextView selectDay=text("SELECT DAY",11,0xff7dd9ff);selectDay.setPadding(dp(8),dp(5),dp(8),dp(5));dayRow.addView(selectDay);
+     selectDay.setOnClickListener(v->{
+      JSONArray entries=readArray("downloads");ArrayList<String> dayKeys=new ArrayList<>();
+      java.text.SimpleDateFormat format=new java.text.SimpleDateFormat("EEEE, MMM d, yyyy",Locale.getDefault());
+      for(int j=0;j<entries.length();j++){JSONObject e=entries.optJSONObject(j);if(e!=null&&downloadMatches(e.optLong("time"))&&targetDay.equals(format.format(new Date(e.optLong("time")))))dayKeys.add(downloadKey(e));}
+      boolean all=selectedDownloadKeys.containsAll(dayKeys);
+      if(all)selectedDownloadKeys.removeAll(dayKeys);else selectedDownloadKeys.addAll(dayKeys);
+      refreshCompletedDownloadRows();
+     });
+    }
+   }
    LinearLayout card=row();card.setPadding(dp(14),dp(12),dp(10),dp(12));card.setBackground(grad(0xff193753,0xff10253e,13));
    LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(9);list.addView(card,lp);
+   if(downloadSelecting){
+    String key=downloadKey(item);
+    CheckBox check=new CheckBox(this);check.setButtonTintList(android.content.res.ColorStateList.valueOf(lightTheme?0xff176c9b:0xff68d8ff));
+    check.setChecked(selectedDownloadKeys.contains(key));card.addView(check);
+    check.setOnCheckedChangeListener((button,on)->{
+     if(on)selectedDownloadKeys.add(key);else selectedDownloadKeys.remove(key);
+     refreshCompletedDownloadRows();
+    });
+   }
    LinearLayout info=column();card.addView(info,new LinearLayout.LayoutParams(0,-2,1));
    TextView title=text("↓  "+name,15,WHITE);title.setSingleLine(true);title.setEllipsize(android.text.TextUtils.TruncateAt.END);info.addView(title);
    String date=new java.text.SimpleDateFormat("MMM d, yyyy • h:mm a",Locale.getDefault()).format(new Date(t));
@@ -1821,7 +1906,7 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
     p.setVisibility("Preparing".equals(liveState)||"Downloading".equals(liveState)||"Paused".equals(liveState)?View.VISIBLE:View.GONE);
     downloadProgressViews.put(task,p);
    }
-   if(id==-2&&("Preparing".equals(item.optString("state"))||"Downloading".equals(item.optString("state"))||"Paused".equals(item.optString("state")))){
+   if(!downloadSelecting&&id==-2&&("Preparing".equals(item.optString("state"))||"Downloading".equals(item.optString("state"))||"Paused".equals(item.optString("state")))){
     String task=item.optString("task");boolean paused="Paused".equals(item.optString("state"));
     LinearLayout controls=column();controls.setPadding(dp(5),0,0,0);card.addView(controls);
     TextView toggle=text(paused?"▶ Resume":"Ⅱ Pause",12,WHITE);
@@ -1838,7 +1923,7 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
       downloadUiHandler.postDelayed(this::refreshCompletedDownloadRows,300);
      }).show());
    }
-   if(status==DownloadManager.STATUS_SUCCESSFUL){
+   if(!downloadSelecting&&status==DownloadManager.STATUS_SUCCESSFUL){
     View.OnClickListener openDownloaded=v->{
      try{
       String savedUri=item.optString("uri","");
@@ -1859,6 +1944,48 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
   }
   if(shown==0){TextView empty=text("No downloads for this period",16,GRAY);empty.setGravity(Gravity.CENTER);empty.setPadding(dp(8),dp(55),dp(8),dp(40));list.addView(empty);}
   downloadUiHandler.postDelayed(downloadUiTick,500);
+ }
+ String downloadKey(JSONObject item){
+  String task=item.optString("task","");
+  if(item.optLong("id")==-2&&!task.isEmpty())return "task:"+task;
+  return "saved:"+item.optLong("id")+":"+item.optLong("time")+":"+item.optString("uri","")+":"+item.optString("name","");
+ }
+ void deleteSelectedDownloads(){
+  if(selectedDownloadKeys.isEmpty()){Toast.makeText(this,"Select downloads to delete first",Toast.LENGTH_SHORT).show();return;}
+  final Set<String> targets=new HashSet<>(selectedDownloadKeys);
+  themed().setTitle("Delete "+targets.size()+" download(s)?")
+   .setMessage("Selected downloads will be removed from this list. Active transfers will stop. Saved files will also be deleted from device storage where permitted.")
+   .setNegativeButton("Cancel",null).setPositiveButton("Delete",(dialog,which)->{
+    JSONArray current=readArray("downloads");JSONArray kept=new JSONArray();
+    DownloadManager dm=(DownloadManager)getSystemService(DOWNLOAD_SERVICE);
+    for(int j=0;j<current.length();j++){
+     JSONObject entry=current.optJSONObject(j);
+     if(entry==null)continue;
+     if(!targets.contains(downloadKey(entry))){kept.put(entry);continue;}
+     long id=entry.optLong("id",-1);
+     if(id==-2){
+      String task=entry.optString("task","");
+      String state=entry.optString("state","");
+      if("Downloading".equals(state)||"Preparing".equals(state)||"Paused".equals(state))
+       MediaDownloadService.deleteDownload(this,task);
+      else deleteStoredDownload(entry);
+     }else if(id>=0){
+      try{dm.remove(id);}catch(Exception ignored){}
+     }else deleteStoredDownload(entry);
+    }
+    storeArray("downloads",kept);
+    selectedDownloadKeys.clear();downloadSelecting=false;
+    refreshCompletedDownloadRows();
+   }).show();
+ }
+ void deleteStoredDownload(JSONObject entry){
+  String raw=entry.optString("uri","");
+  if(raw.isEmpty())return;
+  try{
+   Uri uri=Uri.parse(raw);
+   if("content".equalsIgnoreCase(uri.getScheme()))getContentResolver().delete(uri,null,null);
+   // Never delete arbitrary file:// paths supplied by a webpage.
+  }catch(Exception e){android.util.Log.w("MHBrowser","Could not remove stored download",e);}
  }
  boolean downloadMatches(long t){
   Calendar start=Calendar.getInstance();start.set(Calendar.HOUR_OF_DAY,0);start.set(Calendar.MINUTE,0);start.set(Calendar.SECOND,0);start.set(Calendar.MILLISECOND,0);
@@ -1950,6 +2077,7 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
   LinearLayout list=column();list.setPadding(dp(15),dp(8),dp(15),dp(20));sc.addView(list);
   TextView general=text("GENERAL",12,0xff64caff);general.setPadding(dp(8),dp(15),0,dp(13));list.addView(general);
   settingRow(list,"⚙  General","Search, JavaScript, images and startup",this::general);
+  settingRow(list,"◐  Theme",lightTheme?"Light appearance selected":"Original dark appearance selected",this::themeSettings);
   settingRow(list,"◉  Privacy & Security","Tracker protection, cookies, safe browsing",()->privacy());
   switchRow(list,"🛡  Ad Blocker","Block known advertising domains • On by default","adBlocker",true);
   settingRow(list,"⇄  Proxy settings","HTTP, HTTPS, SOCKS5 and optional credentials",this::proxy);
@@ -1961,6 +2089,31 @@ AlertDialog.Builder themed(){return new MhDialogBuilder();}
   switchRow(list,"⊘  Do Not Track","Send DNT: 1 on direct page navigation","dnt",false);
   settingRow(list,"⚙  Advanced","Zoom, network and history controls",this::advanced);
   settingRow(list,"ⓘ  About MH Browser","Version 1.0 • MasoomDev",()->dialog("About MH Browser","MH Browser\nVersion 1.0\n\nCompany: MasoomDev\nDeveloped By: MH Developers"));
+ }
+ void themeSettings(){
+  showingSettings=true;screen=10;head.removeAllViews();body.removeAllViews();
+  sectionHeader("Theme",this::settings);
+  LinearLayout list=settingContent();
+  TextView intro=text("Choose your browser appearance",18,WHITE);
+  intro.setTypeface(null,Typeface.BOLD);intro.setPadding(dp(8),dp(16),dp(8),dp(10));list.addView(intro);
+  TextView desc=text("Dark keeps the original MH Browser colors. Light uses a bright background with readable dark text. Websites retain their own appearance.",13,GRAY);
+  desc.setPadding(dp(8),0,dp(8),dp(20));list.addView(desc);
+  themeOption(list,"☾  Dark","Original navy and blue MH Browser theme",!lightTheme,false);
+  themeOption(list,"☼  Light","Bright panels with contrasting dark text",lightTheme,true);
+ }
+ void themeOption(LinearLayout list,String label,String desc,boolean checked,boolean chooseLight){
+  LinearLayout card=row();card.setPadding(dp(15),dp(17),dp(13),dp(17));
+  card.setBackground(grad(checked?0xff246493:0xff17334f,checked?0xff174569:0xff10253e,15));
+  LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(12);list.addView(card,lp);
+  LinearLayout words=column();card.addView(words,new LinearLayout.LayoutParams(0,-2,1));
+  TextView name=text(label,17,WHITE);name.setTypeface(null,Typeface.BOLD);words.addView(name);
+  words.addView(text(desc,12,GRAY));
+  TextView marker=text(checked?"✓":"○",23,checked?0xff63d4ff:GRAY);card.addView(marker);
+  card.setOnClickListener(v->{
+   if(lightTheme==chooseLight)return;
+   lightTheme=chooseLight;prefs.edit().putBoolean("lightTheme",lightTheme).apply();
+   applyThemeBars();controls();themeSettings();
+  });
  }
  void privacy(){
   showingSettings=true;screen=3;head.removeAllViews();body.removeAllViews();
